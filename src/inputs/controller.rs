@@ -2,7 +2,7 @@ use std::{thread, time::Duration};
 
 use crossterm::{
     self,
-//    execute,
+    //    execute,
     event::{Event, KeyCode},
 };
 
@@ -42,27 +42,30 @@ static mut PRESSED : Keys = Keys::new();
 static mut PRESSED: KeyCode = KeyCode::Null;
 
 fn io_loop() {
-    loop{
-        match  crossterm::event::read().unwrap() {
+    loop {
+        match crossterm::event::read().unwrap() {
             Event::Key(ekey) => {
-                unsafe{
+                unsafe {
                     if PRESSED == ekey.code {
                         continue;
                     }
                     PRESSED = ekey.code;
                 }
-                if ekey.code == KeyCode::Esc{
+                if ekey.code == KeyCode::Esc {
                     return;
                 }
-            },
+            }
             _ => {}
-        } 
+        }
         thread::sleep(Duration::from_millis(100));
-        unsafe {PRESSED = KeyCode::Null;}
+        unsafe {
+            PRESSED = KeyCode::Null;
+        }
     }
 }
 
-pub fn get_key() -> &'static KeyCode { unsafe{
+pub fn get_key() -> &'static KeyCode {
+    unsafe {
         return &PRESSED;
     }
 }

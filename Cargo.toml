@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 tui = "0.19"
 crossterm = "0.25"
+sdl2 = "0.38"
 svg = "0.10.0"

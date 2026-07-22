@@ -1,32 +1,27 @@
 use tui::{
-    widgets::Widget,
-    buffer::Buffer,
-    buffer::Cell,
-    layout::Rect,
-    style::Color,
-    style::Modifier,
+    buffer::Buffer, buffer::Cell, layout::Rect, style::Color, style::Modifier, widgets::Widget,
 };
 
-pub struct RelationDrawer{
+pub struct RelationDrawer {
     pub x_off: f64,
     pub y_off: f64,
-    pub x_zm : f64,
-    pub y_zm : f64,
+    pub x_zm: f64,
+    pub y_zm: f64,
 
-    pub dist : f64,
+    pub dist: f64,
     pub function: fn(&f64, &f64) -> f64,
 }
 
 // why is it implemented like that
 // I don't fucking know lmao
-impl Widget for &RelationDrawer{
+impl Widget for &RelationDrawer {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let x_con = self.x_zm * (1.0 / area.width  as f64);
+        let x_con = self.x_zm * (1.0 / area.width as f64);
         let y_con = self.y_zm * (1.0 / area.height as f64);
 
-        for i in 0..area.width/2{
-            for j in 0..area.height{
-                if i < 8 && j == 0{
+        for i in 0..area.width / 2 {
+            for j in 0..area.height {
+                if i < 8 && j == 0 {
                     continue;
                 }
                 let x = ((4 * i) as f64) * x_con + self.x_off / 2.0;

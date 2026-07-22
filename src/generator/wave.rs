@@ -59,8 +59,6 @@
 *
 */
 
-use std::cmp::min_by;
-
 use crate::general::{xdia, ydia};
 use crate::generator::random::Random;
 
@@ -131,7 +129,7 @@ impl<T: Default + Eq + PartialEq + Copy + Clone + Mirror> Default for Unit<T> {
 type Collapsed = usize;
 type Uncollapsed = Vec<usize>;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Cell {
     Collapsed(Collapsed),
     Uncollapsed(Uncollapsed),
@@ -211,43 +209,22 @@ impl Cell {
         if self.collapsed() {
             return 1;
         }
-        let should_collapse =
-            north.collapsed() && south.collapsed() && east.collapsed() && west.collapsed();
+        let current = self.uncollapse();
+        let mut new_self = Uncollapsed::new();
+        for pos in current {
+            let mut found: bool;
+            compare_borders!(possible, pos, found, north, south);
+            compare_borders!(possible, pos, found, south, north);
+            compare_borders!(possible, pos, found, east, west);
+            compare_borders!(possible, pos, found, west, east);
 
-        //should it have a single escape part idk i can't care
-        if should_collapse {
-            let expected = Unit::new(
-                possible[north.collapse_val()].south,
-                possible[south.collapse_val()].north,
-                possible[east.collapse_val()].west,
-                possible[west.collapse_val()].east,
-            );
+            new_self.push(pos);
+        }
 
-            let mut index = 0;
-            for p in possible {
-                if &expected == p {
-                    self.clone_from(&Cell::Collapsed(index));
-                    break;
-                }
-                index += 1;
-            }
+        if new_self.len() == 1 {
+            self.clone_from(&Cell::Collapsed(new_self[0]));
         } else {
-            let current = self.uncollapse();
-            let mut new_self = Uncollapsed::new();
-            for pos in current {
-                let mut found: bool;
-                compare_borders!(possible, pos, found, north, south);
-                compare_borders!(possible, pos, found, south, north);
-                compare_borders!(possible, pos, found, east, west);
-                compare_borders!(possible, pos, found, west, east);
-
-                new_self.push(pos);
-            }
-            if new_self.len() == 1 {
-                self.clone_from(&Cell::Collapsed(new_self[0]));
-            } else {
-                self.clone_from(&Cell::Uncollapsed(new_self));
-            }
+            self.clone_from(&Cell::Uncollapsed(new_self));
         }
         return self.entropy();
     }
@@ -255,6 +232,9 @@ impl Cell {
     pub fn force_collapse(&mut self, seed: &u64) {
         let coll = match self {
             Cell::Collapsed(_) => return,
+            Cell::Uncollapsed(u) if u.is_empty() => {
+                panic!("cannot force-collapse a cell with no possible units")
+            }
             Cell::Uncollapsed(u) => u[usize::rands_range(&0, &u.len(), seed)],
         };
 
@@ -334,18 +314,20 @@ impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
         {
             return false;
         } else {
-            // wacky shit bc I still don't understand the
-            // borrow checker lmao
+            let old_cell = self.map[i][j].clone();
             let mut cell = self.map[i][j].clone();
             cell.collapse(north, south, east, west, &self.possible);
             self.map[i][j].clone_from(&cell);
-            return self.map[i][j].entropy() != self.possible.len();
+            if self.map[i][j].entropy() == 0 {
+                panic!("wave collapse contradiction at ({}, {})", i, j);
+            }
+            return self.map[i][j] != old_cell;
         }
     }
 
     pub fn print_self(&self) {
         for __j in 0..self.height {
-            let j = (self.width - 1) - __j;
+            let j = (self.height - 1) - __j;
             print!("{}: ", j);
             for i in 0..self.width {
                 match &self.map[i][j] {
@@ -365,14 +347,24 @@ impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
     }
 
     pub fn cirular_collapse(&mut self, i: usize, j: usize) {
-        for r in 0..=(self.width + self.height) {
-            for step in 1..=4 * r {
-                let ni = i as i64 + xdia(step as u64, r as u64);
-                let nj = j as i64 + ydia(step as u64, r as u64);
+        loop {
+            let mut changed = false;
 
-                if ni < 0 || ni >= self.width as i64 || nj < 0 || nj >= self.height as i64 {
-                    continue;
+            for r in 1..=(self.width + self.height) {
+                for step in 1..=4 * r {
+                    let ni = i as i64 + xdia(step as u64, r as u64);
+                    let nj = j as i64 + ydia(step as u64, r as u64);
+
+                    if ni < 0 || ni >= self.width as i64 || nj < 0 || nj >= self.height as i64 {
+                        continue;
+                    }
+
+                    changed |= self.collapse_cell(ni as usize, nj as usize);
                 }
+            }
+
+            if !changed {
+                break;
             }
         }
     }
@@ -389,15 +381,17 @@ impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
         self.force_collapse(ci, cj);
         self.cirular_collapse(ci, cj);
 
+        let mut step = 0;
         loop {
-            let mut buf = String::new();
             let v = self.least();
             if v.vec.len() == 0 {
                 break;
             }
-            let cp = v.vec[usize::rand_range(&0, &v.vec.len())];
+            let choice_seed = self.seed + step + v.grade as u64;
+            let cp = v.vec[usize::rands_range(&0, &v.vec.len(), &choice_seed)];
             self.force_collapse(cp[0], cp[1]);
             self.cirular_collapse(cp[0], cp[1]);
+            step += 1;
         }
     }
 
