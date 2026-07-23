@@ -57,12 +57,16 @@ impl Tile {
 }
 
 impl TileConnection for Tile {
-    fn can_connect(&self, direction: Direction, other: &Self) -> bool {
-        match direction {
+    fn can_connect(&self, _x: usize, _y: usize, direction: Direction, other: &Self) -> u64 {
+        if match direction {
             Direction::East => Tile::can_connect_horizontal(*self, *other),
             Direction::West => Tile::can_connect_horizontal(*other, *self),
             Direction::North => Tile::can_connect_vertical(*self, *other),
             Direction::South => Tile::can_connect_vertical(*other, *self),
+        } {
+            1
+        } else {
+            0
         }
     }
 }

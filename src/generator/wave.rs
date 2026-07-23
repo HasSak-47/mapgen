@@ -71,7 +71,7 @@ pub enum Direction {
 }
 
 pub trait TileConnection {
-    fn can_connect(&self, direction: Direction, other: &Self) -> bool;
+    fn can_connect(&self, x: usize, y: usize, direction: Direction, other: &Self) -> u64;
 }
 
 type Possible<T> = Vec<T>;
@@ -86,10 +86,10 @@ pub enum Cell {
 }
 
 macro_rules! compare_tiles {
-    ($possible: tt, $pos: tt, $found: tt, $neighbor: tt, $direction: expr) => {
+    ($possible: tt, $pos: tt, $found: tt, $neighbor: tt, $direction: expr, $x: expr, $y: expr) => {
         $found = false;
         for v in $neighbor.uncollapse() {
-            if $possible[$pos].can_connect($direction, &$possible[v]) {
+            if $possible[$pos].can_connect($x, $y, $direction, &$possible[v]) > 0 {
                 $found = true;
                 break;
             }
@@ -150,6 +150,8 @@ impl Cell {
 
     fn collapse<TileT: TileConnection + Copy>(
         &mut self,
+        x: usize,
+        y: usize,
         north: &Cell,
         south: &Cell,
         east: &Cell,
@@ -163,10 +165,10 @@ impl Cell {
         let mut new_self = Uncollapsed::new();
         for pos in current {
             let mut found: bool;
-            compare_tiles!(possible, pos, found, north, Direction::North);
-            compare_tiles!(possible, pos, found, south, Direction::South);
-            compare_tiles!(possible, pos, found, east, Direction::East);
-            compare_tiles!(possible, pos, found, west, Direction::West);
+            compare_tiles!(possible, pos, found, north, Direction::North, x, y);
+            compare_tiles!(possible, pos, found, south, Direction::South, x, y);
+            compare_tiles!(possible, pos, found, east, Direction::East, x, y);
+            compare_tiles!(possible, pos, found, west, Direction::West, x, y);
 
             new_self.push(pos);
         }
@@ -180,13 +182,13 @@ impl Cell {
         return self.entropy();
     }
 
-    pub fn force_collapse(&mut self, seed: &u64) {
+    pub fn force_collapse(&mut self, selected: usize) {
         let coll = match self {
             Cell::Collapsed(_) => return,
             Cell::Uncollapsed(u) if u.is_empty() => {
                 panic!("cannot force-collapse a cell with no possible units")
             }
-            Cell::Uncollapsed(u) => u[usize::rands_range(&0, &u.len(), seed)],
+            Cell::Uncollapsed(_) => selected,
         };
 
         self.clone_from(&Cell::Collapsed(coll));
@@ -271,7 +273,7 @@ impl<TileT: TileConnection + Copy> FiniteMap<TileT> {
         } else {
             let old_cell = self.map[i][j].clone();
             let mut cell = self.map[i][j].clone();
-            cell.collapse(north, south, east, west, &self.possible);
+            cell.collapse(i, j, north, south, east, west, &self.possible);
             self.map[i][j].clone_from(&cell);
             return self.map[i][j] != old_cell;
         }
@@ -333,8 +335,107 @@ impl<TileT: TileConnection + Copy> FiniteMap<TileT> {
 
     pub fn force_collapse(&mut self, i: usize, j: usize) {
         let seed = self.seed + (i ^ j) as u64;
-        self.map[i][j].force_collapse(&seed);
+        let Some(selected) = self.weighted_collapse_choice(i, j, &seed) else {
+            return;
+        };
+        self.map[i][j].force_collapse(selected);
         self.enqueue_neighbors(i, j);
+    }
+
+    fn weighted_collapse_choice(&self, i: usize, j: usize, seed: &u64) -> Option<usize> {
+        let candidates = match &self.map[i][j] {
+            Cell::Collapsed(_) => return None,
+            Cell::Uncollapsed(u) if u.is_empty() => return None,
+            Cell::Uncollapsed(u) => u,
+        };
+
+        let mut total_weight = 0u64;
+        let mut weighted = Vec::<(usize, u64)>::new();
+
+        for candidate in candidates {
+            let weight = self.candidate_weight(i, j, *candidate);
+            if weight == 0 {
+                continue;
+            }
+
+            total_weight = total_weight.saturating_add(weight);
+            weighted.push((*candidate, weight));
+        }
+
+        if weighted.is_empty() || total_weight == 0 {
+            return None;
+        }
+
+        let mut roll = u64::rands_range(&0, &total_weight, seed);
+        for (candidate, weight) in weighted {
+            if roll < weight {
+                return Some(candidate);
+            }
+            roll -= weight;
+        }
+
+        None
+    }
+
+    fn candidate_weight(&self, i: usize, j: usize, candidate: usize) -> u64 {
+        let imax = self.width - 1;
+        let jmax = self.height - 1;
+
+        let east = match i {
+            p if p >= imax => &self.defcell,
+            _ => &self.map[i + 1][j],
+        };
+        let west = match i {
+            0 => &self.defcell,
+            _ => &self.map[i - 1][j],
+        };
+        let north = match j {
+            p if p >= jmax => &self.defcell,
+            _ => &self.map[i][j + 1],
+        };
+        let south = match j {
+            0 => &self.defcell,
+            _ => &self.map[i][j - 1],
+        };
+
+        let mut weight = 1u64;
+        for (direction, neighbor) in [
+            (Direction::North, north),
+            (Direction::South, south),
+            (Direction::East, east),
+            (Direction::West, west),
+        ] {
+            let direction_weight = self.best_neighbor_weight(i, j, candidate, direction, neighbor);
+            if direction_weight == 0 {
+                return 0;
+            }
+            weight = weight.saturating_mul(direction_weight);
+        }
+
+        weight
+    }
+
+    fn best_neighbor_weight(
+        &self,
+        i: usize,
+        j: usize,
+        candidate: usize,
+        direction: Direction,
+        neighbor: &Cell,
+    ) -> u64 {
+        let mut best = 0u64;
+
+        for neighbor_candidate in neighbor.uncollapse() {
+            let connection_weight = self.possible[candidate].can_connect(
+                i,
+                j,
+                direction,
+                &self.possible[neighbor_candidate],
+            );
+            best = best.max(connection_weight);
+        }
+
+        best
     }
 
     pub fn determine(&mut self) {
