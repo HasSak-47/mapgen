@@ -59,72 +59,22 @@
 *
 */
 
-use crate::general::{xdia, ydia};
 use crate::generator::random::Random;
+use std::collections::VecDeque;
 
-pub trait Mirror {
-    fn mirror(&self) -> Self;
+#[derive(Clone, Copy)]
+pub enum Direction {
+    North,
+    South,
+    East,
+    West,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub struct Unit<T: Default + Eq + PartialEq + Copy + Clone + Mirror> {
-    pub north: T,
-    pub south: T,
-    pub east: T,
-    pub west: T,
+pub trait TileConnection {
+    fn can_connect(&self, direction: Direction, other: &Self) -> bool;
 }
 
-type Possible<T> = Vec<Unit<T>>;
-
-impl<T: Default + Eq + PartialEq + Copy + Clone + Mirror> Unit<T> {
-    pub const fn new(north: T, south: T, east: T, west: T) -> Unit<T> {
-        Unit {
-            north,
-            south,
-            east,
-            west,
-        }
-    }
-
-    pub const fn rotate(&self, mut degree: usize) -> Unit<T> {
-        degree %= 4;
-        match degree {
-            1 => Unit::<T>::new(self.east, self.west, self.south, self.north),
-            2 => Unit::<T>::new(self.south, self.north, self.west, self.east),
-            3 => Unit::<T>::new(self.west, self.east, self.north, self.south),
-            _ => Unit::<T>::new(self.north, self.south, self.east, self.west),
-        }
-    }
-
-    pub fn ymirror(&self) -> Unit<T> {
-        Unit::<T>::new(
-            self.north.mirror(),
-            self.south.mirror(),
-            self.west,
-            self.east,
-        )
-    }
-
-    pub fn xmirror(&self) -> Unit<T> {
-        Unit::<T>::new(
-            self.south,
-            self.north,
-            self.west.mirror(),
-            self.east.mirror(),
-        )
-    }
-}
-
-impl<T: Default + Eq + PartialEq + Copy + Clone + Mirror> Default for Unit<T> {
-    fn default() -> Unit<T> {
-        Unit {
-            north: T::default(),
-            south: T::default(),
-            east: T::default(),
-            west: T::default(),
-        }
-    }
-}
+type Possible<T> = Vec<T>;
 
 type Collapsed = usize;
 type Uncollapsed = Vec<usize>;
@@ -135,11 +85,11 @@ pub enum Cell {
     Uncollapsed(Uncollapsed),
 }
 
-macro_rules! compare_borders {
-    ($possible: tt, $pos: tt, $found: tt, $borderA: tt, $borderB: tt) => {
+macro_rules! compare_tiles {
+    ($possible: tt, $pos: tt, $found: tt, $neighbor: tt, $direction: expr) => {
         $found = false;
-        for v in $borderA.uncollapse() {
-            if $possible[$pos].$borderA == $possible[v].$borderB.mirror() {
+        for v in $neighbor.uncollapse() {
+            if $possible[$pos].can_connect($direction, &$possible[v]) {
                 $found = true;
                 break;
             }
@@ -198,13 +148,13 @@ impl Cell {
      * and returns its entropy
      */
 
-    fn collapse<BorderT: Eq + PartialEq + Copy + Default + Mirror>(
+    fn collapse<TileT: TileConnection + Copy>(
         &mut self,
         north: &Cell,
         south: &Cell,
         east: &Cell,
         west: &Cell,
-        possible: &Possible<BorderT>,
+        possible: &Possible<TileT>,
     ) -> usize {
         if self.collapsed() {
             return 1;
@@ -213,10 +163,10 @@ impl Cell {
         let mut new_self = Uncollapsed::new();
         for pos in current {
             let mut found: bool;
-            compare_borders!(possible, pos, found, north, south);
-            compare_borders!(possible, pos, found, south, north);
-            compare_borders!(possible, pos, found, east, west);
-            compare_borders!(possible, pos, found, west, east);
+            compare_tiles!(possible, pos, found, north, Direction::North);
+            compare_tiles!(possible, pos, found, south, Direction::South);
+            compare_tiles!(possible, pos, found, east, Direction::East);
+            compare_tiles!(possible, pos, found, west, Direction::West);
 
             new_self.push(pos);
         }
@@ -226,6 +176,7 @@ impl Cell {
         } else {
             self.clone_from(&Cell::Uncollapsed(new_self));
         }
+
         return self.entropy();
     }
 
@@ -242,14 +193,16 @@ impl Cell {
     }
 }
 
-pub struct FiniteMap<BorderT: Copy + Eq + PartialEq + Mirror + Default> {
+pub struct FiniteMap<TileT: TileConnection + Copy> {
     pub width: usize,
     pub height: usize,
     pub default: Uncollapsed,
     pub defcell: Cell,
-    pub possible: Possible<BorderT>,
+    pub possible: Possible<TileT>,
     pub map: Vec<Vec<Cell>>,
     pub seed: u64,
+    propagation_queue: VecDeque<[usize; 2]>,
+    step: u64,
 }
 
 pub struct LeastContainer {
@@ -257,13 +210,13 @@ pub struct LeastContainer {
     pub grade: usize,
 }
 
-impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
+impl<TileT: TileConnection + Copy> FiniteMap<TileT> {
     pub fn new(
         width: usize,
         height: usize,
-        possible: Possible<BorderT>,
+        possible: Possible<TileT>,
         seed: u64,
-    ) -> FiniteMap<BorderT> {
+    ) -> FiniteMap<TileT> {
         let mut map: Vec<Vec<Cell>> = Vec::<Vec<Cell>>::new();
         let mut default_vec: Vec<Cell> = Vec::<Cell>::new();
         let mut default: Vec<usize> = Vec::new();
@@ -281,6 +234,8 @@ impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
             possible,
             map,
             seed,
+            propagation_queue: VecDeque::new(),
+            step: 0,
         }
     }
 
@@ -318,9 +273,6 @@ impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
             let mut cell = self.map[i][j].clone();
             cell.collapse(north, south, east, west, &self.possible);
             self.map[i][j].clone_from(&cell);
-            if self.map[i][j].entropy() == 0 {
-                panic!("wave collapse contradiction at ({}, {})", i, j);
-            }
             return self.map[i][j] != old_cell;
         }
     }
@@ -346,52 +298,136 @@ impl<BorderT: Copy + Eq + PartialEq + Default + Mirror> FiniteMap<BorderT> {
         println!();
     }
 
-    pub fn cirular_collapse(&mut self, i: usize, j: usize) {
-        loop {
-            let mut changed = false;
-
-            for r in 1..=(self.width + self.height) {
-                for step in 1..=4 * r {
-                    let ni = i as i64 + xdia(step as u64, r as u64);
-                    let nj = j as i64 + ydia(step as u64, r as u64);
-
-                    if ni < 0 || ni >= self.width as i64 || nj < 0 || nj >= self.height as i64 {
-                        continue;
-                    }
-
-                    changed |= self.collapse_cell(ni as usize, nj as usize);
-                }
-            }
-
-            if !changed {
-                break;
-            }
+    fn enqueue_cell(&mut self, i: usize, j: usize) {
+        if !self.propagation_queue.contains(&[i, j]) {
+            self.propagation_queue.push_back([i, j]);
         }
+    }
+
+    fn enqueue_neighbors(&mut self, i: usize, j: usize) {
+        if i > 0 {
+            self.enqueue_cell(i - 1, j);
+        }
+        if i + 1 < self.width {
+            self.enqueue_cell(i + 1, j);
+        }
+        if j > 0 {
+            self.enqueue_cell(i, j - 1);
+        }
+        if j + 1 < self.height {
+            self.enqueue_cell(i, j + 1);
+        }
+    }
+
+    pub fn propagation_substep(&mut self) -> bool {
+        let Some([i, j]) = self.propagation_queue.pop_front() else {
+            return false;
+        };
+
+        if self.collapse_cell(i, j) {
+            self.enqueue_neighbors(i, j);
+        }
+
+        true
     }
 
     pub fn force_collapse(&mut self, i: usize, j: usize) {
         let seed = self.seed + (i ^ j) as u64;
         self.map[i][j].force_collapse(&seed);
+        self.enqueue_neighbors(i, j);
     }
 
     pub fn determine(&mut self) {
-        let ci = usize::rands_range(&0, &self.width, &self.seed);
-        let cj = usize::rands_range(&0, &self.height, &(self.seed + ci as u64));
+        while self.step() {}
+    }
 
-        self.force_collapse(ci, cj);
-        self.cirular_collapse(ci, cj);
+    pub fn substep(&mut self) -> bool {
+        self.substep_inner(false)
+    }
 
-        let mut step = 0;
-        loop {
+    pub fn substep_with_random_fallback(&mut self) -> bool {
+        self.substep_inner(true)
+    }
+
+    pub fn step(&mut self) -> bool {
+        self.step_inner(false)
+    }
+
+    pub fn step_with_random_fallback(&mut self) -> bool {
+        self.step_inner(true)
+    }
+
+    fn substep_inner(&mut self, random_fallback: bool) -> bool {
+        if self.propagation_substep() {
+            return true;
+        }
+
+        self.force_next_cell(random_fallback)
+    }
+
+    fn step_inner(&mut self, random_fallback: bool) -> bool {
+        let mut progressed = false;
+
+        while self.propagation_substep() {
+            progressed = true;
+        }
+
+        if progressed {
+            return true;
+        }
+
+        if !self.force_next_cell(random_fallback) {
+            return false;
+        }
+
+        while self.propagation_substep() {}
+
+        true
+    }
+
+    fn force_next_cell(&mut self, random_fallback: bool) -> bool {
+        let cp = if self.step == 0 {
+            let ci = usize::rands_range(&0, &self.width, &self.seed);
+            let cj = usize::rands_range(&0, &self.height, &(self.seed + ci as u64));
+            [ci, cj]
+        } else {
             let v = self.least();
             if v.vec.len() == 0 {
-                break;
+                if random_fallback {
+                    match self.random_uncollapsed() {
+                        Some(pos) => pos,
+                        None => return false,
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                let choice_seed = self.seed + self.step + v.grade as u64;
+                v.vec[usize::rands_range(&0, &v.vec.len(), &choice_seed)]
             }
-            let choice_seed = self.seed + step + v.grade as u64;
-            let cp = v.vec[usize::rands_range(&0, &v.vec.len(), &choice_seed)];
-            self.force_collapse(cp[0], cp[1]);
-            self.cirular_collapse(cp[0], cp[1]);
-            step += 1;
+        };
+
+        self.force_collapse(cp[0], cp[1]);
+        self.step += 1;
+        true
+    }
+
+    pub fn random_uncollapsed(&self) -> Option<[usize; 2]> {
+        let mut vec = Vec::<[usize; 2]>::new();
+
+        for i in 0..self.width {
+            for j in 0..self.height {
+                if !self.map[i][j].collapsed() && self.map[i][j].entropy() > 0 {
+                    vec.push([i, j]);
+                }
+            }
+        }
+
+        if vec.len() == 0 {
+            None
+        } else {
+            let seed = self.seed + self.step + vec.len() as u64;
+            Some(vec[usize::rands_range(&0, &vec.len(), &seed)])
         }
     }
 
